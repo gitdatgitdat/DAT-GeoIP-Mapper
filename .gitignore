@@ -1,0 +1,27 @@
+# Outputs
+
+/out/  
+/reports/  
+trace.json  
+trace.html  
+
+---
+
+# Logs & Temp
+
+*.log  
+*.tmp  
+
+--- 
+
+# env/tokens (if you use a file)
+
+.env
+
+---
+
+# OS/Editor Stuff
+
+.DS_Store
+Thumbs.db
+.vscode/
