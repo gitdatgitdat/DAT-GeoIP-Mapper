@@ -49,21 +49,18 @@ function Get-Geo {
         $j = Invoke-RestMethod -Uri $u -Headers $hdr -TimeoutSec 6
         $lat=$null;$lon=$null
         if ($j.loc -and $j.loc -match ','){ $lat=[double]($j.loc.Split(',')[0]); $lon=[double]($j.loc.Split(',')[1]) }
-        return [pscustomobject]@{
+        [pscustomobject]@{
           ip=$IP; lat=$lat; lon=$lon; city=$j.city; region=$j.region; country=$j.country
-          org=$j.org
-          provider='ipinfo'
+          org=$j.org; provider='ipinfo'
         }
       }
       default {
-        # ip-api.com (free, no token; note: HTTP/HTTPS mirrors exist)
         $u = "http://ip-api.com/json/$IP?fields=status,country,regionName,city,lat,lon,org,query"
         $j = Invoke-RestMethod -Uri $u -TimeoutSec 6
         if ($j.status -ne 'success') { return $null }
-        return [pscustomobject]@{
+        [pscustomobject]@{
           ip=$j.query; lat=[double]$j.lat; lon=[double]$j.lon; city=$j.city; region=$j.regionName; country=$j.country
-          org=$j.org
-          provider='ip-api'
+          org=$j.org; provider='ip-api'
         }
       }
     }
@@ -71,13 +68,21 @@ function Get-Geo {
 }
 
 function Build-Report {
-  param([string]$TargetHost,[object[]]$Hops,[string]$Provider,[string]$Json,[string]$Html,[switch]$Open)
-  # Geo-enrich
+  param(
+    [string]$TargetHost,
+    [object[]]$Hops,
+    [string]$Provider,
+    [string]$Token,
+    [string]$JsonPath,
+    [string]$HtmlPath,
+    [switch]$Open
+  )
+  # Geo-enrich with a tiny cache for repeated IPs
   $geoCache = @{}
   $enriched = foreach ($h in $Hops) {
     $g = $null
     if ($h.IP) {
-      if (-not $geoCache.ContainsKey($h.IP)) { $geoCache[$h.IP] = Get-Geo -IP $h.IP -Provider $Provider -Token $ApiToken }
+      if (-not $geoCache.ContainsKey($h.IP)) { $geoCache[$h.IP] = Get-Geo -IP $h.IP -Provider $Provider -Token $Token }
       $g = $geoCache[$h.IP]
     }
     [pscustomobject]@{
@@ -87,12 +92,12 @@ function Build-Report {
     }
   }
 
-  # JSON (all hops)
-  $dir = Split-Path -Parent $Json
+  # Write JSON (per target)
+  $dir = Split-Path -Parent $JsonPath
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  ($enriched | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 $Json
+  ($enriched | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 $JsonPath
 
-  # HTML (Leaflet)
+  # Build HTML
   $pts = $enriched | Where-Object { $_.Lat -and $_.Lon } | Sort-Object Hop
   $center = if ($pts) { @($pts[0].Lat, $pts[0].Lon) } else { @(20,0) }
   $rows = ($enriched | ForEach-Object {
@@ -100,7 +105,7 @@ function Build-Report {
   }) -join ""
   $markers = ($pts | ForEach-Object {
     $label = [System.Web.HttpUtility]::JavaScriptStringEncode(("{0} • {1} • {2}ms" -f $_.IP, ($_.City ?? ''), ($_.RTTms ?? '')))
-    "[{0}, {1}, ""$label""]" -f [string]$_.Lat, [string]$_.Lon
+    "[{0}, {1}, ""{2}""]" -f [string]$_.Lat, [string]$_.Lon, $label
   }) -join ",`n"
 
   $html = @"
@@ -115,7 +120,7 @@ table{width:100%;border-collapse:collapse} th,td{padding:8px;border-bottom:1px s
 </style>
 <header>
   <h2 style="margin:0">Trace to $TargetHost</h2>
-  <div class="small">Geo by $GeoProvider • Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</div>
+  <div class="small">Geo by $Provider • Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</div>
 </header>
 <div id="map"></div>
 <aside>
@@ -140,22 +145,31 @@ if(latlngs.length>1){ L.polyline(latlngs,{weight:3}).addTo(map); map.fitBounds(l
 </script>
 "@
 
-  $dir = Split-Path -Parent $Html
-  if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  $html | Out-File -Encoding utf8 $Html
-  Write-Host "[OK] Wrote JSON -> $Json"
-  Write-Host "[OK] Wrote HTML -> $Html"
-  if ($Open) { Start-Process $Html | Out-Null }
+  $dir2 = Split-Path -Parent $HtmlPath
+  if ($dir2 -and -not (Test-Path $dir2)) { New-Item -ItemType Directory -Force -Path $dir2 | Out-Null }
+  $html | Out-File -Encoding utf8 $HtmlPath
+  Write-Host "[OK] Wrote JSON -> $JsonPath"
+  Write-Host "[OK] Wrote HTML -> $HtmlPath"
+  if ($Open) { Start-Process -FilePath $HtmlPath | Out-Null }
   $enriched
 }
 
-# ---- run for each target ----
+# ---- main loop per target ----
 $all = @()
 foreach($t in $Target){
   Write-Host "Tracing $t ..."
-  $hops = Invoke-Trace -Host $t -MaxHops $MaxHops -TimeoutMs $TimeoutMs
-  $all += Build-Report -Host $t -Hops $hops -Provider $GeoProvider -Json $Json -Html $Html -Open:$Open
+  $hops = Invoke-Trace -TargetHost $t -MaxHops $MaxHops -TimeoutMs $TimeoutMs
+
+  # per-target output files (avoid overwrites)
+  $safe = ($t -replace '[:\\\/\?\*\|"<>\s]','_')
+  $outDir = ".\reports"
+  if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+  $jsonPath = if ($PSBoundParameters.ContainsKey('Json')) { $Json } else { Join-Path $outDir "TraceMap-$safe.json" }
+  $htmlPath = if ($PSBoundParameters.ContainsKey('Html')) { $Html } else { Join-Path $outDir "TraceMap-$safe.html" }
+
+  $all += Build-Report -TargetHost $t -Hops $hops -Provider $GeoProvider -Token $ApiToken -JsonPath $jsonPath -HtmlPath $htmlPath -Open:$Open
 }
 
-# exit code (any geolocated hops? if none, warn but succeed)
+# exit code (any geolocated hops? if none, warn but succeed with 2)
 if (-not ($all | Where-Object { $_.Lat -and $_.Lon })) { exit 2 } else { exit 0 }
+
