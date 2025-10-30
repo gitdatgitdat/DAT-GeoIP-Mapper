@@ -12,19 +12,19 @@ Trace to a target, GeoIP each hop, and render an interactive Leaflet map.
 ---
 
 # Usage  
-
-Basic (uses ip-api.com fallback):
-
-.\Get-TraceMap.ps1 -Target cloudflare.com -Open
-
-Use ipinfo (recommended; set token once):
-
+  
+Basic (uses ip-api.com fallback):  
+  
+.\Get-TraceMap.ps1 -Target cloudflare.com -Open  
+  
+Use ipinfo (recommended; set token once):  
+  
 $env:IPINFO_TOKEN = 'YOUR_TOKEN'  
 .\Get-TraceMap.ps1 -Target cloudflare.com -GeoProvider ipinfo -Open  
-
-Multiple targets, custom outputs:
-
-.\Get-TraceMap.ps1 -Target cloudflare.com,github.com -Json .\out\trace.json -Html .\out\trace.html -Open
+  
+Multiple targets, custom outputs:  
+  
+.\Get-TraceMap.ps1 -Target cloudflare.com,github.com -Json .\out\trace.json -Html .\out\trace.html -Open  
 
 ---
 
