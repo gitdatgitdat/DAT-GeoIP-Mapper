@@ -105,22 +105,38 @@ function Build-Report {
   }) -join ""
   $markers = ($pts | ForEach-Object {
     $label = [System.Web.HttpUtility]::JavaScriptStringEncode(("{0} • {1} • {2}ms" -f $_.IP, ($_.City ?? ''), ($_.RTTms ?? '')))
-    "[{0}, {1}, ""{2}""]" -f [string]$_.Lat, [string]$_.Lon, $label
+    $rtt   = if ($_.RTTms) { [int]$_.RTTms } else { -1 }  # -1 = unknown
+    "{ lat: $([string]$_.Lat), lon: $([string]$_.Lon), hop: $($_.Hop), rtt: $rtt, label: ""$label"" }"
   }) -join ",`n"
 
-  $html = @"
+$html = @"
 <!doctype html><meta charset="utf-8"><title>TraceMap: $TargetHost</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <style>
-body{font-family:ui-sans-serif,Segoe UI,Roboto,Arial;margin:0;display:grid;grid-template-columns:1fr 440px;grid-template-rows:auto 1fr;height:100vh}
-header{grid-column:1/3;padding:12px 16px;border-bottom:1px solid #eee}
-#map{height:100%} aside{border-left:1px solid #eee;overflow:auto}
-table{width:100%;border-collapse:collapse} th,td{padding:8px;border-bottom:1px solid #f0f0f0}
-.small{color:#666}
+  :root{--muted:#6b7280}
+  body{
+    font-family:ui-sans-serif,Segoe UI,Roboto,Arial;
+    margin:0;
+    height:100vh;
+    display:grid;
+    grid-template-columns:1fr 440px;
+    grid-template-rows:auto 1fr;
+  }
+  header{grid-column:1/3;padding:12px 16px;border-bottom:1px solid #eee}
+  /* Make the map always have height */
+  #map{
+    height:calc(100vh - 56px);   /* header ~56px */
+    min-height:400px;            /* safety fallback */
+  }
+  aside{border-left:1px solid #eee;overflow:auto}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;border-bottom:1px solid #f0f0f0}
+  .small{color:var(--muted)}
 </style>
 <header>
   <h2 style="margin:0">Trace to $TargetHost</h2>
-  <div class="small">Geo by $Provider • Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</div>
+  <div class="small">Geo by $GeoProvider • Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</div>
 </header>
 <div id="map"></div>
 <aside>
@@ -130,18 +146,65 @@ table{width:100%;border-collapse:collapse} th,td{padding:8px;border-bottom:1px s
   </table>
 </aside>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const map = L.map('map').setView([$($center[0]), $($center[1])], 4);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
-const hops = [
+  const map = L.map('map').setView([$($center[0]), $($center[1])], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  // Make sure the map actually paints even if layout finishes late
+  function kick(){ try{ map.invalidateSize(); }catch(e){} }
+  window.addEventListener('load', kick);
+  // If the browser supports it, keep the map in sync with any resizes
+  if (window.ResizeObserver) {
+    new ResizeObserver(kick).observe(document.body);
+  } else {
+    setTimeout(kick, 100); // simple fallback
+  }
+
+  function colorFor(rtt){
+    if (rtt < 0) return '#9ca3af';   // unknown
+    if (rtt <= 20) return '#22c55e'; // good
+    if (rtt <= 50) return '#f59e0b'; // warning
+    return '#ef4444';                // high
+  }
+
+  const hops = [
 $markers
-];
-const latlngs = [];
-hops.forEach(([lat,lon,label])=>{
-  latlngs.push([lat,lon]);
-  L.circleMarker([lat,lon],{radius:5}).addTo(map).bindPopup(label);
-});
-if(latlngs.length>1){ L.polyline(latlngs,{weight:3}).addTo(map); map.fitBounds(latlngs,{padding:[20,20]}); }
+  ];
+
+  const latlngs = [];
+  hops.forEach(h => {
+    if (typeof h.lat === 'number' && typeof h.lon === 'number'){
+      latlngs.push([h.lat, h.lon]);
+      const c = colorFor(h.rtt ?? -1);
+      L.circleMarker([h.lat, h.lon], {
+        radius: 6, color: c, fillColor: c, fillOpacity: 0.9, weight: 1
+      }).addTo(map).bindPopup(h.label);
+    }
+  });
+
+  if (latlngs.length > 1) {
+    L.polyline(latlngs, {weight: 3}).addTo(map);
+    map.fitBounds(latlngs, {padding:[20,20]});
+  }
+
+  // legend
+  const legend = L.control({position:'bottomright'});
+  legend.onAdd = function(){
+    const div = L.DomUtil.create('div','legend');
+    div.innerHTML = `
+      <div style="background:#fff;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font:12px/1.3 ui-sans-serif,Segoe UI,Roboto,Arial;">
+        <div style="font-weight:600;margin-bottom:6px">RTT legend</div>
+        <div><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:50%;margin-right:6px;"></span> ≤ 20 ms</div>
+        <div><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:50%;margin-right:6px;"></span> 21–50 ms</div>
+        <div><span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:50%;margin-right:6px;"></span> > 50 ms</div>
+        <div><span style="display:inline-block;width:10px;height:10px;background:#9ca3af;border-radius:50%;margin-right:6px;"></span> unknown</div>
+      </div>`;
+    return div;
+  };
+  legend.addTo(map);
 </script>
 "@
 
