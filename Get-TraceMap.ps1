@@ -67,6 +67,47 @@ function Get-Geo {
   } catch { return $null }
 }
 
+function Ensure-LeafletAssets {
+  param([string]$AssetRoot)  # e.g. ...\reports\assets\leaflet
+
+  $cssPath = Join-Path $AssetRoot 'leaflet.css'
+  $jsPath  = Join-Path $AssetRoot 'leaflet.js'
+
+  if ( (Test-Path $cssPath) -and (Test-Path $jsPath) ) { return @($cssPath,$jsPath) }
+
+  if (-not (Test-Path $AssetRoot)) {
+    New-Item -ItemType Directory -Force -Path $AssetRoot | Out-Null
+  }
+
+  $sources = @(
+    @{ css='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+       js ='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js' },
+    @{ css='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+       js ='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js' },
+    @{ css='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css';
+       js ='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js' }
+  )
+
+  foreach ($s in $sources) {
+    try {
+      if (-not (Test-Path $cssPath)) {
+        Invoke-WebRequest -Uri $s.css -OutFile $cssPath -UseBasicParsing -TimeoutSec 15
+      }
+      if (-not (Test-Path $jsPath)) {
+        Invoke-WebRequest -Uri $s.js  -OutFile $jsPath  -UseBasicParsing -TimeoutSec 15
+      }
+    } catch {
+      Remove-Item -ErrorAction SilentlyContinue $cssPath,$jsPath
+    }
+    if ( (Test-Path $cssPath) -and (Test-Path $jsPath) ) { break }
+  }
+
+  if (-not ( (Test-Path $cssPath) -and (Test-Path $jsPath) )) {
+    throw "Could not download Leaflet assets from any mirror."
+  }
+  @($cssPath,$jsPath)
+}
+
 function Build-Report {
   param(
     [string]$TargetHost,
@@ -109,10 +150,17 @@ function Build-Report {
     "{ lat: $([string]$_.Lat), lon: $([string]$_.Lon), hop: $($_.Hop), rtt: $rtt, label: ""$label"" }"
   }) -join ",`n"
 
+# ensure local leaflet assets next to the HTML file
+$assetDir = Join-Path (Split-Path -Parent $HtmlPath) 'assets\leaflet'
+$paths = Ensure-LeafletAssets -AssetRoot $assetDir
+$leafletCss = Get-Content -LiteralPath $paths[0] -Raw
+$leafletJs  = Get-Content -LiteralPath $paths[1] -Raw
+
 $html = @"
 <!doctype html><meta charset="utf-8"><title>TraceMap: $TargetHost</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+$($leafletCss)
+</style>
 <style>
   :root{--muted:#6b7280}
   body{
@@ -145,8 +193,9 @@ $html = @"
     <tbody>$rows</tbody>
   </table>
 </aside>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+$($leafletJs)
+</script>
 <script>
   const map = L.map('map').setView([$($center[0]), $($center[1])], 4);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
