@@ -153,31 +153,19 @@ function Build-Report {
 # ensure local leaflet assets next to the HTML file
 $assetDir = Join-Path (Split-Path -Parent $HtmlPath) 'assets\leaflet'
 $paths = Ensure-LeafletAssets -AssetRoot $assetDir
-$leafletCss = Get-Content -LiteralPath $paths[0] -Raw
-$leafletJs  = Get-Content -LiteralPath $paths[1] -Raw
+
+# Simple, file-relative paths from the HTML file
+$leafletCssRel = 'assets/leaflet/leaflet.css'
+$leafletJsRel  = 'assets/leaflet/leaflet.js'
 
 $html = @"
 <!doctype html><meta charset="utf-8"><title>TraceMap: $TargetHost</title>
-<style>
-$($leafletCss)
-</style>
+<link rel="stylesheet" href="$leafletCssRel">
 <style>
   :root{--muted:#6b7280}
-  body{
-    font-family:ui-sans-serif,Segoe UI,Roboto,Arial;
-    margin:0;
-    height:100vh;
-    display:grid;
-    grid-template-columns:1fr 440px;
-    grid-template-rows:auto 1fr;
-  }
+  body{font-family:ui-sans-serif,Segoe UI,Roboto,Arial;margin:0;height:100vh;display:grid;grid-template-columns:1fr 440px;grid-template-rows:auto 1fr}
   header{grid-column:1/3;padding:12px 16px;border-bottom:1px solid #eee}
-  /* Make the map always have height */
-  #map{
-    height:calc(100vh - 56px);   /* header ~56px */
-    min-height:400px;            /* safety fallback */
-  }
-  #map{ height:calc(100vh - 56px); min-height:400px; background:#f8fafc; outline:1px solid #e5e7eb; }
+  #map{height:calc(100vh - 56px);min-height:400px;background:#f8fafc;outline:1px solid #e5e7eb}
   aside{border-left:1px solid #eee;overflow:auto}
   table{width:100%;border-collapse:collapse}
   th,td{padding:8px;border-bottom:1px solid #f0f0f0}
@@ -194,125 +182,62 @@ $($leafletCss)
     <tbody>$rows</tbody>
   </table>
 </aside>
-<script>
-$($leafletJs)
-</script>
-<script>
-  // --- initialize map container
-  const map = L.map('map', { zoomControl: true });
 
-  // helper: pick a sane center if no points
+<script src="$leafletJsRel"></script>
+<script>
+  const map = L.map('map',{zoomControl:true});
   const defaultCenter = [$($center[0]), $($center[1])];
 
-  // --- robust basemap loader with fallbacks and diagnostics
-  function addLayer(url, attribution) {
-    return L.tileLayer(url, { maxZoom: 19, attribution });
-  }
-
+  function addLayer(url, attribution){ return L.tileLayer(url,{maxZoom:19,attribution}); }
   const candidates = [
-    { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-      att: '© OpenStreetMap' },
-    { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      att: '© OpenStreetMap' },
-    { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-      att: '© OpenStreetMap, © CARTO' }
+    { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', att: '© OpenStreetMap' },
+    { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', att: '© OpenStreetMap' },
+    { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', att: '© OpenStreetMap, © CARTO' }
   ];
 
-  async function pickBasemap() {
-    // try to load a single known tile first; if it errors, try the next
-    for (const c of candidates) {
+  async function pickBasemap(){
+    for (const c of candidates){
       try {
-        await new Promise((resolve, reject) => {
-          const test = new Image();
-          test.crossOrigin = 'anonymous';
-          test.onload = () => resolve();
-          test.onerror = () => reject();
-          // z/x/y = 1/1/1 is tiny and quick
-          const testUrl = c.url
-            .replace('{s}', 'a')
-            .replace('{z}', '1').replace('{x}', '1').replace('{y}', '1');
-          test.src = testUrl;
+        await new Promise((res,rej)=>{
+          const t=new Image();
+          t.onload=()=>res(); t.onerror=()=>rej();
+          t.crossOrigin='anonymous';
+          t.src=c.url.replace('{s}','a').replace('{z}','1').replace('{x}','1').replace('{y}','1');
         });
-        addLayer(c.url, c.att).addTo(map);
-        return c.url;
-      } catch { /* try next */ }
+        addLayer(c.url,c.att).addTo(map);
+        return true;
+      } catch {}
     }
-    // last resort: draw a neutral background so the pane isn't blank
-    const pane = map.createPane('empty');
-    const el = L.DomUtil.create('div', '', pane);
-    el.style.cssText = 'background:#f3f4f6;width:100%;height:100%;';
-    // give users a visible hint
     const note = L.control({position:'topright'});
-    note.onAdd = () => {
-      const d = L.DomUtil.create('div');
-      d.style.cssText = 'background:#fff;border:1px solid #ddd;padding:8px 10px;border-radius:6px;font:12px ui-sans-serif';
-      d.textContent = 'Basemap tiles blocked or unavailable.';
-      return d;
-    };
+    note.onAdd = ()=>{ const d=L.DomUtil.create('div'); d.style.cssText='background:#fff;border:1px solid #ddd;padding:8px 10px;border-radius:6px;font:12px ui-sans-serif'; d.textContent='Basemap tiles blocked or unavailable.'; return d; };
     note.addTo(map);
-    return 'none';
+    return false;
   }
 
-  // --- marker color by RTT
-  function colorFor(rtt){
-    if (rtt == null || rtt < 0) return '#9ca3af';   // unknown
-    if (rtt <= 20) return '#22c55e';                // good
-    if (rtt <= 50) return '#f59e0b';                // warning
-    return '#ef4444';                                // high
-  }
+  function colorFor(rtt){ if(rtt==null||rtt<0) return '#9ca3af'; if(rtt<=20) return '#22c55e'; if(rtt<=50) return '#f59e0b'; return '#ef4444'; }
 
-  // --- your hop data (already rendered server-side)
   const hops = [
-  $markers
+$markers
   ];
 
-  (async function main(){
-    const chosen = await pickBasemap();
+  (async function(){
+    await pickBasemap();
 
-    // lay out map now that CSS/DOM is ready
     function kick(){ try{ map.invalidateSize(); }catch(e){} }
     window.addEventListener('load', kick);
-    if (window.ResizeObserver) new ResizeObserver(kick).observe(document.body);
-    else setTimeout(kick, 120);
+    if (window.ResizeObserver) new ResizeObserver(kick).observe(document.body); else setTimeout(kick,120);
 
-    // add points (if any)
-    const latlngs = [];
+    const latlngs=[];
     for (const h of hops){
-      if (typeof h.lat === 'number' && typeof h.lon === 'number'){
-        latlngs.push([h.lat, h.lon]);
-        const c = colorFor(h.rtt);
-        L.circleMarker([h.lat, h.lon], {
-          radius: 6, color: c, fillColor: c, fillOpacity: 0.9, weight: 1
-        }).addTo(map).bindPopup(h.label);
+      if (typeof h.lat==='number' && typeof h.lon==='number'){
+        latlngs.push([h.lat,h.lon]);
+        const c=colorFor(h.rtt);
+        L.circleMarker([h.lat,h.lon],{radius:6,color:c,fillColor:c,fillOpacity:0.9,weight:1}).addTo(map).bindPopup(h.label);
       }
     }
-
-    // view
-    if (latlngs.length > 1){
-      map.fitBounds(latlngs, {padding:[20,20]});
-    } else if (latlngs.length === 1){
-      map.setView(latlngs[0], 9);
-    } else {
-      map.setView(defaultCenter, 3);   // still show a world view even with no markers
-    }
-
-    // legend (only if basemap rendered)
-    if (chosen !== 'none') {
-      const legend = L.control({position:'bottomright'});
-      legend.onAdd = function(){
-        const div = L.DomUtil.create('div','legend');
-        div.innerHTML = `
-          <div style="background:#fff;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font:12px/1.3 ui-sans-serif,Segoe UI,Roboto,Arial;">
-            <div style="font-weight:600;margin-bottom:6px">RTT legend</div>
-            <div><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:50%;margin-right:6px;"></span> ≤ 20 ms</div>
-            <div><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:50%;margin-right:6px;"></span> 21–50 ms</div>
-            <div><span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:50%;margin-right:6px;"></span> > 50 ms</div>
-            <div><span style="display:inline-block;width:10px;height:10px;background:#9ca3af;border-radius:50%;margin-right:6px;"></span> unknown</div>
-          </div>`;
-        return div;
-      };
-      legend.addTo(map);
-    }
+    if (latlngs.length>1) map.fitBounds(latlngs,{padding:[20,20]});
+    else if (latlngs.length===1) map.setView(latlngs[0],9);
+    else map.setView(defaultCenter,3);
   })();
 </script>
 "@
